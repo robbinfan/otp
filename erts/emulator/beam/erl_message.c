@@ -437,6 +437,7 @@ erts_queue_dist_message(Process *rcvr,
 	mp->data.dist_ext = dist_ext;
 	LINK_MESSAGE(rcvr, mp);
 
+	erts_incr_message_count(&rcvr->msg_enq);
 	notify_new_message(rcvr);
     }
 }
@@ -536,6 +537,8 @@ erts_queue_message(Process* receiver,
                 tok_label, tok_lastcnt, tok_serial);
     }
 #endif
+
+    erts_incr_message_count(&receiver->msg_enq);
     notify_new_message(receiver);
 
     if (IS_TRACED_FL(receiver, F_TRACE_RECEIVE)) {
@@ -1025,6 +1028,7 @@ erts_send_message(Process* sender,
 	    
 	    ERTS_SMP_MSGQ_MV_INQ2PRIVQ(receiver);
 	    LINK_MESSAGE_PRIVQ(receiver, mp);
+	    erts_incr_message_count(&receiver->msg_enq);
 
 	    if (IS_TRACED_FL(receiver, F_TRACE_RECEIVE)) {
 		trace_receive(receiver, message);
@@ -1080,6 +1084,7 @@ erts_send_message(Process* sender,
 	mp->next = NULL;
 	mp->data.attached = NULL;
 	LINK_MESSAGE(receiver, mp);
+	erts_incr_message_count(&receiver->msg_enq);
 
 	if (receiver->status == P_WAITING) {
 	    erts_add_to_runq(receiver);
