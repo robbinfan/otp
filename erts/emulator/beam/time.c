@@ -91,12 +91,17 @@ static erts_smp_mtx_t tiw_lock;
 ** The individual timer cells in tiw are also protected by the same mutex.
 */
 
+struct tiw_head {
+    ErlTimer* head;
+    ErlTimer* tail;
+};
+
 #ifdef SMALL_MEMORY
 #define TIW_SIZE 8192
 #else
 #define TIW_SIZE 65536		/* timing wheel size (should be a power of 2) */
 #endif
-static ErlTimer** tiw;		/* the timing wheel, allocated in init_time() */
+static struct tiw_head* tiw;  /* the timing wheel, allocated in init_time() */
 static Uint tiw_pos;		/* current position in wheel */
 static Uint tiw_count;      /* current count */
 static Uint tiw_nto;		/* number of timeouts in wheel */
@@ -148,7 +153,7 @@ static erts_short_time_t next_time_internal(void) /* PRE: tiw_lock taken by call
     min = (Uint32) -1;	/* max Uint32 */
     i = tiw_pos;
     do {
-    if ((p = tiw[i]) != NULL) {
+    if ((p = tiw[i].head) != NULL) {
         if (p->count <= tiw_count) {
 		/* found next timeout */
 		dt = do_time_read();
@@ -178,7 +183,7 @@ static erts_short_time_t next_time_internal(void) /* PRE: tiw_lock taken by call
 static void remove_timer(ErlTimer *p) {
     /* first */
     if (!p->prev) {
-	tiw[p->slot] = p->next;
+	tiw[p->slot].head = p->next;
 	if(p->next)
 	    p->next->prev = NULL;
     } else {
@@ -187,6 +192,7 @@ static void remove_timer(ErlTimer *p) {
 
     /* last */
     if (!p->next) {
+    tiw[p->slot].tail = p->prev;
 	if (p->prev)
 	    p->prev->next = NULL;
     } else {
@@ -241,7 +247,7 @@ static ERTS_INLINE void bump_timer_internal(erts_short_time_t dt) /* PRE: tiw_lo
     /* this is to bump the count with the right amount */
 	/* when dtime >= TIW_SIZE */
 	if (tiw_pos == keep_pos) extra = 0;
-	prev = &tiw[tiw_pos];
+	prev = &tiw[tiw_pos].head;
 	while ((p = *prev) != NULL) {
 	    ASSERT( p != p->next);
         if (p->count > tiw_count+extra) {
@@ -313,10 +319,10 @@ erts_init_time(void)
 
     erts_smp_mtx_init(&tiw_lock, "timer_wheel");
 
-    tiw = (ErlTimer**) erts_alloc(ERTS_ALC_T_TIMER_WHEEL,
-				  TIW_SIZE * sizeof(ErlTimer*));
+    tiw = (struct tiw_head*) erts_alloc(ERTS_ALC_T_TIMER_WHEEL,
+				  TIW_SIZE * sizeof(struct tiw_head));
     for(i = 0; i < TIW_SIZE; i++)
-	tiw[i] = NULL;
+	tiw[i].head = tiw[i].tail = NULL;
     do_time_init();
     tiw_pos = tiw_nto = 0;
     tiw_min_ptr = NULL;
@@ -337,6 +343,7 @@ insert_timer(ErlTimer* p, Uint t)
 
     ErlTimer* tp;
     ErlTimer* prev;
+    ErlTimer* next;
 
     /* The current slot (tiw_pos) in timing wheel is the next slot to be
      * be processed. Hence no extra time tick is needed.
@@ -357,20 +364,22 @@ insert_timer(ErlTimer* p, Uint t)
     p->count = tiw_count + (Uint) ((ticks + tiw_pos) / TIW_SIZE);
  
     /* insert in sorted order */
-    prev = NULL;
-    for (tp = tiw[tm]; tp && p->count > tp->count; prev = tp, tp = tp->next);
+    /* start from tail since new timers are more likely to be after existing timers */
+    next = NULL;
+    for (tp = tiw[tm].tail; tp && p->count < tp->count; next = tp, tp = tp->prev);
     if (tp) {
-    p->prev = tp->prev;
-    tp->prev = p;
-    p->next = tp;
+    p->next = tp->next;
+    tp->next = p;
+    p->prev = tp;
     } else {
-    p->prev = prev;
-    p->next = NULL;
+    p->next = next;
+    p->prev = NULL;
+    tiw[tm].head = p;
     }
-    if (prev) {
-    prev->next = p;
+    if (next) {
+    next->prev = p;
     } else {
-    tiw[tm] = p;
+    tiw[tm].tail = p;
     }
 
     /* insert min time */
@@ -488,9 +497,9 @@ void erts_p_slpq(void)
     tiw_count, tiw_pos, tiw_nto, do_time_read(), tiw_min_ptr, tiw_min);
     i = tiw_pos;
     do {
-	if (tiw[i] != NULL) {
+	if (tiw[i].head != NULL) {
 	    erts_printf("%d:\n", i);
-	    for(p = tiw[i]; p != NULL; p = p->next) {
+	    for(p = tiw[i].head; p != NULL; p = p->next) {
         erts_printf(" %p (count %d, slot %d, count_rem = %u, time_left = %u)\n",
             p, p->count, p->slot, p->count - tiw_count, time_left_internal(p));
 	    }
