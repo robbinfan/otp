@@ -97,10 +97,12 @@ struct tiw_head {
 };
 
 #ifdef SMALL_MEMORY
-#define TIW_SIZE 8192
+#define DEF_TIW_SIZE 8192
 #else
-#define TIW_SIZE 65536		/* timing wheel size (should be a power of 2) */
+#define DEF_TIW_SIZE 65536		/* timing wheel size (should be a power of 2) */
 #endif
+static Uint tiw_size;
+#define TIW_SIZE tiw_size
 static struct tiw_head* tiw;  /* the timing wheel, allocated in init_time() */
 static Uint tiw_pos;		/* current position in wheel */
 static Uint tiw_count;      /* current count */
@@ -312,13 +314,19 @@ void
 erts_init_time(void)
 {
     int i;
+    char buf[21]; /* enough for any 64-bit integer */
+    size_t bufsize = sizeof(buf);
 
     /* system dependent init; must be done before do_time_init()
        if timer thread is enabled */
     itime = erts_init_time_sup();
 
     erts_smp_mtx_init(&tiw_lock, "timer_wheel");
-
+    if (erts_sys_getenv("ERL_TIMER_WHEEL_SIZE", buf, &bufsize) == 0)
+    tiw_size = atoi(buf);
+    else
+    tiw_size = DEF_TIW_SIZE;
+    
     tiw = (struct tiw_head*) erts_alloc(ERTS_ALC_T_TIMER_WHEEL,
 				  TIW_SIZE * sizeof(struct tiw_head));
     for(i = 0; i < TIW_SIZE; i++)
